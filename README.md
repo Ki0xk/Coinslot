@@ -1,145 +1,205 @@
-# Ki0xk — Physical Coin Acceptor Module
+# Ki0xk Coinslot — Physical Coin Acceptor Module
 
-Arduino Uno firmware for the physical coin acceptor used in Ki0xk, a physical payments infrastructure for events, festivals, retail, and temporary venues.
+Arduino Uno firmware for pulse-based electronic coin acceptors. Detects inserted coins via hardware interrupts, classifies by denomination, and emits JSON events over serial for the Ki0xk kiosk backend.
 
-> ⚠️ **This project is not a crypto ATM.**
-> It is a physical interface for modern payment infrastructure.
-
-## Overview
-
-This hardware module represents the physical entry point of the Ki0xk system, allowing users to load value into a digital session using real-world cash.
-
-The Arduino Uno:
-- Detects and validates inserted coins
-- Translates coin pulses into value units
-- Sends structured JSON signals to the Ki0xk software layer
-
-## How It Fits Into Ki0xk
+## How It Works
 
 ```
-Ki0xk Kiosk → physical entry point
-     ↓
-Coins/Cash → initial value source
-     ↓
-Arduino Module → signal + validation layer (this repo)
-     ↓
-NFC/Session → user interaction bridge
-     ↓
-USDC → value standard (software layer)
-     ↓
-Yellow → instant off-chain settlement engine
+  [Coin Inserted]
+       |
+       v
+  Coin Acceptor (pulse output)
+       |
+       v  COIN signal (Pin 2)
+  Arduino Uno (interrupt-driven pulse counter)
+       |
+       v  Serial JSON @ 115200 baud
+  Ki0xk Kiosk Backend (USB /dev/ttyUSB0)
+       |
+       v
+  Session deposit (peso -> USDC conversion)
 ```
 
-This repository focuses only on the hardware side of that flow.
+The coin acceptor sends a burst of electrical pulses for each coin. Different denominations produce different pulse counts. The Arduino counts pulses using a hardware interrupt, waits for a silence gap (no more pulses), then classifies the coin and emits a JSON event.
 
-## Hardware Requirements
+## Hardware
 
-- Arduino Uno (ATmega328P)
-- Electronic coin acceptor (pulse-based)
-- Coin acceptor signal connected to **Pin 2** (interrupt-capable)
+### Bill of Materials
 
-## Wiring
+| Component | Purpose |
+|-----------|---------|
+| Arduino Uno clone (ATmega328P) | Pulse counter + serial output |
+| Electronic coin acceptor (pulse-based, normally open) | Coin detection |
+| 5V DC power adapter with barrel jack | Powers the coin acceptor |
+| Barrel jack breakout PCB (green board) | Extracts 5V/GND from the adapter |
+| Breadboard | Common ground bus + signal routing |
+| Jumper wires (male-to-male, male-to-female) | Connections between components |
+| Copper wire segments (optional) | Bridge from breakout PCB pads to jumper wires |
 
-| Coin Acceptor | Arduino Uno |
-|---------------|-------------|
-| COIN (signal) | Pin 2       |
-| GND           | GND         |
-| VCC           | 5V or 12V (per acceptor spec) |
+### Wiring Diagram
 
-## Installation
+```
+                    5V DC Power Adapter
+                         |
+                         v
+              ┌─────────────────────┐
+              │  Barrel Jack        │
+              │  Breakout PCB       │
+              │                     │
+              │   (+) ─── 5V out    │──────────────┐
+              │   (-) ─── GND out   │──────┐       │
+              └─────────────────────┘      │       │
+                                           │       │
+                                           v       v
+                                    ┌──────────────────┐
+                                    │    Breadboard     │
+                                    │                   │
+                                    │  GND bus ─────────┼──┐
+                                    │  5V  bus ─────────┼──┼──┐
+                                    └──────────────────┘  │  │
+                                           │              │  │
+                          ┌────────────────┘              │  │
+                          │                               │  │
+                          v                               v  v
+                   ┌─────────────┐              ┌──────────────────┐
+                   │ Arduino Uno │              │  Coin Acceptor   │
+                   │             │              │                  │
+                   │  GND ───────┼── shared ────┼── GND (black)    │
+                   │  Pin 2 ─────┼──────────────┼── COIN (gray)    │
+                   │             │              │  VCC ─── 5V      │
+                   │  USB ───────┼── to PC      │                  │
+                   └─────────────┘              └──────────────────┘
+```
 
-1. Install [PlatformIO](https://platformio.org/install)
-2. Clone this repository
-3. Build and upload:
+### Key Wiring Points
+
+1. **Power**: The 5V adapter powers the coin acceptor through the barrel jack breakout board. The Arduino is powered separately via USB from the PC.
+
+2. **Shared ground**: The GND from the barrel jack breakout, the Arduino GND, and the coin acceptor GND all connect together on the breadboard's ground bus. This common ground is essential for the pulse signal to work.
+
+3. **Signal**: The coin acceptor's COIN output (pulse/signal wire) connects to Arduino **Pin 2** (hardware interrupt capable). Pin 2 is configured with `INPUT_PULLUP` since the acceptor uses an open-collector output that pulls to GND on each pulse.
+
+4. **Trigger mode**: Set the coin acceptor to **Normally Open (NO)** circuit mode.
+
+### Coin Acceptor Setup
+
+Set the coin acceptor's pulse speed to **MEDIUM**:
+
+| Speed | Stability | Notes |
+|-------|-----------|-------|
+| Fast | Unstable | Pulses merge, unreliable counts |
+| **Medium** | Stable | Recommended setting |
+| Slow | Somewhat unstable | Occasional miscounts |
+
+Program the acceptor to output the following pulses per denomination:
+
+| Coin | Programmed Pulses | Observed Range (medium) |
+|------|-------------------|------------------------|
+| 1 peso | 1 | 1-2 pulses |
+| 2 pesos | 6 | 5-10 pulses |
+| 5 pesos | 13 | 11-16 pulses |
+
+The firmware uses wide tolerance ranges to handle pulse drift at medium speed.
+
+## Software
+
+### Prerequisites
+
+- [PlatformIO CLI](https://platformio.org/install/cli) installed
+- Arduino Uno connected via USB (`/dev/ttyUSB0` on Linux)
+
+### Build and Upload
 
 ```bash
-platformio run -e uno --target upload
+cd Coinslot
+
+# Build only
+pio run -e uno
+
+# Build and upload to Arduino
+pio run -e uno --target upload
+
+# Monitor serial output
+pio device monitor -b 115200
+
+# Build, upload, and monitor in one step
+pio run -e uno --target upload && pio device monitor -b 115200
 ```
 
-4. Monitor output:
+### Serial Output Format
 
-```bash
-platformio device monitor -b 115200
+JSON lines at 115200 baud:
+
 ```
-
-## Output Format
-
-The module emits JSON over serial at 115200 baud:
-
-```json
+{"type":"status","msg":"READY coin-pulse reader"}
+{"type":"coin","pulses":1,"value":1,"ok":true}
+{"type":"coin","pulses":7,"value":2,"ok":true}
 {"type":"coin","pulses":13,"value":5,"ok":true}
+{"type":"coin","pulses":4,"value":0,"ok":false}
 ```
 
-| Field | Description |
-|-------|-------------|
-| `type` | Always `"coin"` |
-| `pulses` | Raw pulse count from acceptor |
-| `value` | Mapped denomination (1, 2, or 5 peso) |
-| `ok` | `true` if valid, `false` if unrecognized pulse count |
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | `"coin"` or `"status"` | Event type |
+| `pulses` | number | Raw pulse count from acceptor |
+| `value` | 1, 2, 5, or 0 | Denomination in pesos (0 = unrecognized) |
+| `ok` | boolean | `true` if valid denomination, `false` if unknown |
 
-## Coin Classification
+### Pulse Classification
 
-| Pulse Count | Value |
-|-------------|-------|
-| 1–2         | 1 peso |
-| 5–10        | 2 peso |
-| 11–16       | 5 peso |
+Defined in `src/main.cpp` `classifyCoin()`:
 
-Pulse ranges can be adjusted in `src/main.cpp` to match your coin acceptor's configuration.
+| Pulse Range | Denomination | USDC Equivalent |
+|-------------|-------------|-----------------|
+| 1-2 | 1 peso | $0.05 |
+| 5-10 | 2 pesos | $0.10 |
+| 11-16 | 5 pesos | $0.25 |
+| other | unknown (rejected) | - |
 
-## What This Repo Does
+### Tunable Parameters
 
-- ✅ Reads pulses from standard electronic coin acceptors
-- ✅ Maps pulse counts to predefined denominations
-- ✅ Prevents double-counting with hardware debouncing
-- ✅ Emits clean, structured events to host system
-
-## What This Repo Does NOT Do
-
-- ❌ No blockchain logic
-- ❌ No wallet management
-- ❌ No cryptographic operations
-- ❌ No payment settlement
-
-All financial logic lives in the Ki0xk software layer. This module is pure hardware I/O.
-
-## Use Cases
-
-- Festival or event Ki0xk stations
-- Retail or pop-up shops
-- Temporary venues
-- Cash-to-digital onboarding points
-- Hybrid cash + NFC payment flows
-
-## Architecture Philosophy
-
-| Principle | Description |
-|-----------|-------------|
-| **Simplicity** | Arduino Uno–compatible, minimal dependencies |
-| **Reliability** | Deterministic pulse counting and validation |
-| **Interoperability** | Clean signals for any higher-level system |
-
-The hardware is designed to be easy to replace, easy to audit, and easy to deploy at scale.
-
-## Tunable Parameters
-
-Located in `src/main.cpp`:
+In `src/main.cpp`:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `DEBOUNCE_US` | 2500 | Noise filtering threshold (microseconds) |
-| `COIN_GAP_MS` | 240 | Silence duration indicating coin completion (ms) |
-| `COIN_PIN` | 2 | GPIO pin for coin acceptor signal |
+| `DEBOUNCE_US` | 2500 | Noise filtering (microseconds). Ignore edges closer than this. |
+| `COIN_GAP_MS` | 240 | Silence gap to finalize coin (milliseconds). After this many ms with no pulses, the coin is classified and emitted. |
+| `COIN_PIN` | 2 | GPIO pin for coin signal. Configurable via `platformio.ini` build flag. Must be interrupt-capable (Pin 2 or 3 on Uno). |
 
-## Disclaimer
+## Integration with Ki0xk Backend
 
-This repository is part of a hackathon prototype and reference implementation.
+The kiosk backend reads serial JSON from `/dev/ttyUSB0` and processes coin events:
 
-It demonstrates:
-- How physical cash input can be bridged into modern digital payment systems
-- How legacy hardware can coexist with instant, session-based payment infrastructure
+```
+Arduino serial output  -->  Backend reads JSON line
+                            -->  depositToSession(pesoToUsdc(value))
+                            -->  Session balance updated
+```
 
-**It is not intended for production use without further hardening.**
+The backend's `pesoToUsdc()` conversion and `depositToSession()` function handle the rest. See [kiosk/](../kiosk/) for the backend.
+
+The frontend ([ki0xk-kiosk-ui](https://github.com/Ki0xk/ki0xk-kiosk-ui)) includes a CoinSlotSimulator component for development without physical hardware.
+
+## Project Structure
+
+```
+Coinslot/
+  platformio.ini     # PlatformIO config (board, baud rate, build flags)
+  src/
+    main.cpp         # Single-file firmware (interrupt handler + classifier)
+  CLAUDE.md          # AI assistant context
+  README.md          # This file
+```
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| No serial output | Check USB cable, verify `/dev/ttyUSB0` exists, check baud rate is 115200 |
+| All coins read as 1 pulse | Shared GND missing between Arduino and coin acceptor |
+| Erratic pulse counts | Switch coin acceptor to MEDIUM speed, check wiring for loose connections |
+| `value: 0` for valid coins | Adjust pulse ranges in `classifyCoin()` to match your acceptor |
+| Permission denied on upload | `sudo chmod a+rw /dev/ttyUSB0` or add user to `dialout` group |
 
 ## License
 
